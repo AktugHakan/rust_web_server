@@ -2,15 +2,18 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Result, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
+    sync::{Arc, RwLock},
+    thread,
 };
 
 const DEFAULT_404_PAGE: &str = "<h1>404 Not Found</h1>";
 
 pub type Route = String;
 pub type HTML = String;
+pub type RouteList = Arc<RwLock<HashMap<Route, fn() -> HTML>>>;
 pub struct WebServer {
-    routes: HashMap<Route, fn() -> HTML>,
-    //threading: bool,
+    routes: RouteList,
+    threading: bool,
     listener_socket: TcpListener,
     pub default_route_404: Option<Route>,
 }
@@ -19,18 +22,18 @@ impl WebServer {
     pub fn launch(
         ip: Option<Ipv4Addr>,
         port: u16,
-        //threading: bool,
+        threading: bool,
         routes: Option<HashMap<Route, fn() -> HTML>>,
     ) -> Result<WebServer> {
         let ip = ip.unwrap_or(Ipv4Addr::UNSPECIFIED);
         let listener_socket = TcpListener::bind((ip, port))?;
-        let routes = routes.unwrap_or_default();
+        let routes = Arc::new(RwLock::new(routes.unwrap_or_default()));
 
         Ok(WebServer {
             routes,
             listener_socket,
             default_route_404: None,
-            //threading,
+            threading,
         })
     }
 
@@ -39,17 +42,18 @@ impl WebServer {
             let Ok(client) = client else {
                 continue;
             };
-            self.serve_to_client(client);
-            //TODO: Add multi-threading support!
+            let routes_ref = Arc::clone(&self.routes);
+            let default_route_404 = self.default_route_404.clone();
+            thread::spawn(move || Self::serve_to_client(default_route_404, routes_ref, client));
         }
     }
 
-    fn serve_to_client(&self, mut client: TcpStream) {
+    fn serve_to_client(default_route_404: Option<Route>, routes: RouteList, mut client: TcpStream) {
         let route = Self::read_request(&client);
-        let html = match self.routes.get(&route) {
+        let html = match routes.read().unwrap().get(&route) {
             Some(f) => f(),
-            None => match self.default_route_404.as_ref() {
-                Some(default_route) => match self.routes.get(default_route) {
+            None => match default_route_404.as_ref() {
+                Some(default_route) => match routes.read().unwrap().get(default_route) {
                     Some(f) => f(),
                     None => DEFAULT_404_PAGE.to_string(),
                 },
@@ -61,7 +65,10 @@ impl WebServer {
     }
 
     pub fn add_route(&mut self, route: Route, rendering_function: fn() -> HTML) {
-        self.routes.insert(route, rendering_function);
+        self.routes
+            .write()
+            .unwrap()
+            .insert(route, rendering_function);
     }
 
     fn read_request(client: &TcpStream) -> Route {

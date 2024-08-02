@@ -1,7 +1,7 @@
 use web_server::server::WebServer;
 
 fn main() {
-    let mut server = WebServer::launch(None, 1453, None).expect("Server couldn't start!");
+    let mut server = WebServer::launch(None, 1453, true, None).expect("Server couldn't start!");
     println!("Started!!!");
     server.add_route("/".to_string(), index);
     server.add_route("/about".to_string(), about);
